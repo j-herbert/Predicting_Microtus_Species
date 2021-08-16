@@ -1,0 +1,357 @@
+---
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=F,warning=F,echo=F,fig_height=10,fig_width=7,cache = F)
+```
+
+\LARGE __Predicting Microtus Species Between Subterraneus and Multplex__
+
+\normalsize _Determining the best logistic regression model for determining 199 unknown species of microtus based on 8 different mouth, skull, and bone measurements. Based on a stepwise regression feature selection and different fit tests, it was determined that the best predictors for determining the type of species was the upper left molar (M1Left) width and the length of the incisive foramen (Foramen). However, for predictive purposes, the suggestions of the stepwise regression was used. Finally, it was determined that a logistic regression may not be the best model to determine species type, and different classification models, such as KNN and decision tree should be tested._
+
+\normalsize __Author__: John Herbert
+
+\normalsize __Institution__: Dakota State University
+
+## Abstract
+
+The aim of this study is to determine the best logistic regression model to predict unknown Microtus species types. This will be done by using a stepwise regression to determine which variables have the best fit based on the Akaike Information Criterion (AIC). In addition, multicollinearity was tested using a Variance Inflation Factor (VIF) function and variables were removed and tested against the stepwise regression model. Also, a model was tested based on the p values of the cofficients for each variable in the model, and 2 were chosen with the lowest p values and compared against the other models. The models were chosen on AIC, Mean Squared Error (MSE), and the error rate from a 10 fold cross validation model.
+
+## External Libraries
+
+Packages and tools used for this analysis:
+
+* **Flury** package for the *microtus* dataset
+* **dplyr** and **tidyr** package sued for data manipulation
+* **knitr** package used for *kable* function used to format tables
+* **htmltools** package used for formatting pdf document
+* **ggplot2** package for graphing
+* **gridExtra** package for to output plots side by side
+* **boot** package for logistic regression function
+* **moments** for skewness and kurtosis calculations
+* **gggally** package for pair plot comparison graph 
+* **stats** package used for stepwise regression
+* **boot** package used for cv.glm (cross validation calcuation)
+* **car** package for multicollinearity testing
+
+```{r}
+# install.packages('dplyr')
+suppressWarnings(suppressMessages(library(dplyr)))
+# install.packages('knitr')
+suppressWarnings(suppressMessages(library(knitr)))
+# install.packages('htmltools')
+suppressWarnings(suppressMessages(library(htmltools)))
+# install.packages('Flury')
+suppressWarnings(suppressMessages(library(Flury)))
+# install.packages('ggplot2')
+suppressWarnings(suppressMessages(library(ggplot2)))
+# install.packages('gridExtra')
+suppressWarnings(suppressMessages(library(gridExtra)))
+# install.packages('tidyr')
+suppressWarnings(suppressMessages(library(tidyr)))
+# install.packages('boot')
+suppressWarnings(suppressMessages(library(boot)))
+# install.packages('moments')
+suppressWarnings(suppressMessages(library(moments)))
+# install.packages('GGally')
+suppressWarnings(suppressMessages(library(GGally)))
+# install.packages('stats')
+suppressWarnings(suppressMessages(library(stats)))
+# install.packages('ISLR')
+suppressWarnings(suppressMessages(library(ISLR)))
+# install.packages('car')
+suppressWarnings(suppressMessages(library(car)))
+```
+
+
+## Methodology
+
+### Data
+
+This study was conducted by Airoldi, J.P. and Flury, M. Salvioni in 1995. This study's goal was to determine a visual method of classifying a Microtus between two species types: Multiplex and Subterraneus. These species can be determined based on chromosome count, however the goal is to see if there is an easy way to determine the difference. 
+
+The data consists of 3 target variables: multiplex, subterraneus, and unknown. There are also 8 input variables to determine the classification:
+
+* **Group**: factor with levels multiplex subterraneus unknown
+* **M1Left**: Width of upper left molar 1 (0.001mm)
+* **M2Left**: Width of upper left molar 2 (0.001mm)
+* **M3Left**: Width of upper left molar 3 (0.001mm)
+* **Foramen**: Length of incisive foramen (0.001mm)
+* **Pbone**: Length of palatal bone (0.001mm)
+* **Length**: Condylo incisive length or skull length (0.01mm)
+* **Height**: Skull height above bullae (0.01mm)
+* **Rostrum**: Skull width across rostrum (0.01mm)
+
+In addition, there are a total of 199 records: 100 in the unknown group, 43 in multiplex, and 46 in suberraneus. 
+
+### Data Manipulation and Exploration
+
+Since the unknown Group subset is the variable that needs to be predicted, all rows containing the unknown Group classifications will be seperated into a test dataset, and the other classifications will be subset into a training dataset to form a model for prediction. This is being seperated and only the training dataset will be used for model fitting because I do not want the test data to be influenced by the model fitting in any way.
+
+Below is a summary of descriptive statistics for each of the variables in the training dataset. We can determine that all values appear to be scaled appropriately (in mm), there are no null values, and appears to be no large outliers or unreasonable/false values.
+
+
+```{r}
+data("microtus")
+
+train.dat <- microtus %>% filter(Group != 'unknown')
+test.dat <- microtus %>% filter(Group == 'unknown')
+test.dat <- test.dat[,-1]
+
+kable(summary(train.dat),caption = 'Summary of Training Subset')
+```
+
+In addition, a historam of each of the input variables in the dataset was graphed to determine normality of the data and determine if there are any outliers that need manipulation.. Based on the below graph, the data appears to be relatively normal, except the *Height* variable appears to be right skewed. There are a few outliers in a few of the variables, however when run on a stepwise regression, they do not appear to skew the results, so they are kept in. 
+
+This was done in **ggplot2** with the *gather* and *geom_histogram* functions. In addition, *facet_wrap* was used to format each histogram into one visual.
+
+```{r,fig_height=10,fig_width=15}
+ggplot(tidyr::gather(train.dat[,-1],cols,value), aes(x=value)) + 
+       geom_histogram(bindwidth =15) + facet_wrap(cols~.,scale='free') +  
+       ggtitle('Histogram of Microtus Features')
+```
+
+There are a few variables that appear right skewed, therefore skewness was calculated to determine if any variables need log transformation to normalize. Based on the table below, each variables is below absolute 1, but some are above 0.5 which mean there is some skewness in some of the variables. However, log transformation did not affect the scoring, fit, or variable selection of the model, so it was not be transformed.
+
+the *skewness* function in the **moments** package was us for the skewness test.
+
+```{r}
+skew.dat <- data.frame(Feature=vector(),Skewness=double())
+
+names.lst <- list(colnames(train.dat))
+
+for (i in 2:9){
+  skew.dat[i-1,1] <- names.lst[[1]][i]
+  skew.dat[i-1,2] <- skewness(train.dat[,i])
+}
+
+kable(skew.dat,caption='Skewness of Microtus Features')
+```
+
+A pairs plot was used to determine the density of each group in relation to each variable. There does appear to be a linear relationship in the data, with a clear seperation of classes in the *M1Left*, *M2Left*, and *Rostrum* variables.There appears to be a strong seperation for th *M1Left* variable specifically. 
+
+This was made using the **ggpairs** function in the **GGally** package in conjunction with other **ggplot2** functions.
+
+```{r,fig_height=15,fig_width=15}
+ggpairs(train.dat,columns = 2:9, upper = list(continuous = wrap('cor',size=1)), lower=list(continuous = wrap('points',size=0.5)), 
+        aes(color=Group)) +
+  ggtitle('Microtus Classification Scatterplot') +  
+  theme(text = element_text(size = 5)) 
+```
+
+A scatterplot and logistic regression line were plotted for each of the variables vs. the target. Based on this, it appears that multiple inputs are fairly good at predicting which species the microtus are at high and low measurements, but there is a lot of cross over in the middle ranges. Specifically, *M1Left* has the least cross over in measurements, while the *Foramen* variables has the most. This is also shown by a steep sigmoid function line for *M1Left*, while the *Foramen* function appears to be linear and has a fair amount of cross over in measurments. 
+
+This graph was made using **ggplot2* in conjunction with *geom_poimt*, and *stat_smooth* functions for the scatterplot and linear regression lines.
+
+```{r,fig_height=15,fig_width=15}
+train2.dat <- train.dat %>% dplyr::mutate(Group = ifelse(Group == 'multiplex',0,1))
+plot.lst = list()
+
+plot.lst[[1]] <- ggplot(data=train2.dat, aes(x=M1Left,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') + 
+                    ggtitle('Logistic Regression\nPrediction: M1Left')
+
+plot.lst[[2]] <- ggplot(data=train2.dat, aes(x=M2Left,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') + 
+                    ggtitle('Logistic Regression\nPrediction: M2Left')
+
+plot.lst[[3]] <- ggplot(data=train2.dat, aes(x=M3Left,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') + 
+                    ggtitle('Logistic Regression\nPrediction: M3Left')
+
+plot.lst[[4]] <- ggplot(data=train2.dat, aes(x=Foramen,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') +
+                    ggtitle('Logistic Regression\nPrediction: Foramen')
+
+plot.lst[[5]] <- ggplot(data=train2.dat, aes(x=Pbone,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') +
+                    ggtitle('Logistic Regression\nPrediction: Pbone')
+
+plot.lst[[6]] <- ggplot(data=train2.dat, aes(x=Length,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') +
+                    ggtitle('Logistic Regression\nPrediction: Length')
+
+plot.lst[[7]] <- ggplot(data=train2.dat, aes(x=Height,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') +
+                    ggtitle('Logistic Regression\nPrediction: Height')
+
+plot.lst[[8]] <- ggplot(data=train2.dat, aes(x=Rostrum,y=Group)) + geom_point() +
+                    stat_smooth(method='glm',method.args=list(family='binomial'),se=F,color='blue') +
+                    ggtitle('Logistic Regression\nPrediction: Rostrum')
+
+grid.arrange(plot.lst[[1]],plot.lst[[2]],plot.lst[[3]],plot.lst[[4]],plot.lst[[5]],plot.lst[[6]],plot.lst[[7]],
+             plot.lst[[8]],ncol = 3)
+```
+
+### Feature Selection
+
+In order to determine which variables should be kept in the model, a stepwise regression (forwards and backwards) was used based on AIC as a scoring metric. First, the data was fit using a binomial logistic regression with Group as the target, and all the other variables as the inputs. 
+
+The model was made fitting the model with the *glm* function and then using the *step* function in the **stats** package and setting the direction to 'both' for the forwards and backwards stepwise. A seed was set in order to produce the same results.
+
+```{r,results = 'hide'}
+formula <- Group ~ . 
+glm.mod <- glm(data=train2.dat,formula=formula,family='binomial')
+
+set.seed(42)
+stp.regr <- step(glm.mod,direction='both',trace = -1)
+```
+
+The result of the stepwise regression were 5 remaining variables from the original 8 with an AIC of 27. *M1Left* is the only variable with a p value below the 0.05 signifiance level and *Foramen* is below the 0.10 signifiance.
+
+```{r}
+kable(summary(stp.regr)$coefficients,caption = 'Model 1: Stepwise Feature Selection')
+cat('\nAIC for Stepwise Regression is',stp.regr$aic)
+```
+
+When fitting the variables based on the lowest AIC of different combinations of independent variables. The results are an AIC of 27.7 and a mean squared error of 3.18. These appear fairly high, however it should be compared with other models to determine if it is truely the best fitted logistic regression model.
+
+These metrics were calculated using the *aic* call in the *glm* function and the residuals call on the model for the MSE.
+
+```{r}
+glm_t.mod <- glm(Group ~ M1Left + M3Left + Foramen + Length + Height, data = train2.dat,family='binomial')
+
+kable(data.frame(Measure=c('AIC','MSE'),Metric=c(glm_t.mod$aic,mean(glm_t.mod$residuals^2))),caption='Model 1 Measurements')
+```
+
+When examining the variables, especially the molar length, there appears to be some multicolinearity in the variables. While this normally does not affect the accuracy of a model's predictions, if the goal of the study is to determine a simple way to determine the difference in species, a VIF test should be run, and the variables with a score above 10 should be removed and compared to the stepwise regression.
+
+Starting with the step wise regression variables as a base, we can see from the test below that *M3Left* and *Length* have high multicollinearity and will be removed for Model 2 to see if a simplier model can improve or produce the same scores as the stepwise. If it does, this would be the model of choice for our predictions.
+
+THe multicollinearity test was conducted using the *vif* function in the **car** package on the glm model with the stepwise regression chosen variables.
+
+```{r}
+kable(vif(glm_t.mod),caption='Multicollinearity Test on Model 1')
+```
+
+
+## Model 2: Variance Inflation Adjusted
+
+The logistic function for Model 2 will include *M1Left*, *Foramen*, and *Height* as the input variables.
+
+BaSed on the summaries below, *M1Left* has a signifiance below 0.05, while the other 2 variables are not significant according to the p tests. In addition, AIC is 29 and MSE is 4, both worse than the stepwise regression model. 
+
+```{r}
+glm_vif.mod <- glm(data=train2.dat,formula=Group ~ M1Left + Foramen + Height,family='binomial')
+
+kable(summary(glm_vif.mod)$coefficients, caption = 'Coefficients of Model 2')
+
+kable(data.frame(Measure=c('AIC','MSE'),Score=c(glm_vif.mod$aic,mean(glm_vif.mod$residuals^2))),caption='Model 2 Measurements')
+```
+
+However, if we run a VIF function, we can see that we have removed the multicolinearity from the variables.
+
+```{r}
+kable(vif(glm_vif.mod),caption='Multicollinearilty Test on Model 2')
+```
+
+### Model 3: Trimmed
+
+As mentioned above, a simplier model would be better, therefore we will only include the 2 variables with the most significant p values: *M1Left* and *Foramen*. 
+
+According to the logistic regession summary below, Model 3 has a AIC of 28 and a MSE of 7. While AIC improved for this model, MSE got worse. This makes sense since AIC measures how well the model explains the greatest amount of variation using the fewest possible independent variables. Since we reduced the number of variables *Foramen* now has signifiance below the 0.05 p value, and since the variable coefficients are fairly low, the AIC improved. However, there may have been some useful information in the *Height* variable (most likely at the upper and lower values) that improved MSE in Model 2.
+
+```{r}
+glm3.mod <- glm(Group ~ M1Left + Foramen, data = train2.dat,family='binomial')
+
+kable(summary(glm3.mod)$coefficients, caption = 'Coefficients of Model 3')
+
+kable(data.frame(Measure=c('AIC','MSE'),Model_3=c(glm3.mod$aic,mean(glm3.mod$residuals^2))),caption='Model 3 Measurements')
+```
+
+### Model Selection
+
+In order to determine which model to use in predicting the test data (unknown species group), I will run a 10 fold cross validation on all 3 models. Since there are no huge improvements or differences between the models, the MSE scores can vary significantly depending on the seed I use. Therefore, I created a loop of 1,000 random tests and took an average of each score for each model to determine which one actually performs the best. Below are the average MSE scores for each model based on the cross validation test.
+
+Based on the results below, Model 3 has the loweest MSE of all 3 models, however, Model 1 and model 3 appear to be very close, thereore I will run a chi squared test to determine if there is statistical signifiance between the 2 models.
+
+This table was made by creating a for loop of 1,000 iterations. Within the for loop, I set the seed to randomly select a number between 1 and 1,000,000 each iteration. The results of each iterations were put into a data frame, and the mean of the error rates for each model were recorded and shown below.
+
+```{r}
+cost <- function(r, pi = 0)
+  mean(abs(r-pi) > 0.5)
+
+cv_mod.dat <- data.frame(m1=numeric(),m2=numeric(),m3=numeric())
+
+for (i in 1:1000){
+    set.seed(sample(1:1000000,1))
+    
+    cv_mod.dat[i,1] <- cv.glm(train2.dat,glm_t.mod,K=10,cost)$delta[1]
+    cv_mod.dat[i,2] <- cv.glm(train2.dat,glm_vif.mod,K=10,cost)$delta[1]
+    cv_mod.dat[i,3] <- cv.glm(train2.dat,glm3.mod,K=10,cost)$delta[1]
+  
+}
+
+cv.dat <- data.frame(Model=c('Model 1','Model 2','Model 3'),
+                     MSE=c(mean(cv_mod.dat[[1]]),mean(cv_mod.dat[[2]]), mean(cv_mod.dat[[3]])))
+
+kable(cv.dat, caption='10 Fold CV Error of 3 Models')
+```
+
+From the chi squared test below, there is no statistical signifiance at the 0.05 level, but there is signifiance at the 0.10. This test is between Model 1 and 3, since the scores were so similar. 
+
+The test was created using the *anova* function and setting teset equal to 'Chisq'.
+
+```{r}
+kable(anova(glm_t.mod,glm3.mod,test='Chisq'),caption='Chi Squared Test Model 1 vs. Model 3')
+```
+
+## Summary
+
+Based on the scores below, Model 1 has the best fit. It has the lowest model AIC and MSE of the 3, and while it does not have the lowest error rate from the cross validation, the difference between that and the Model 3 is not not significant at the 0.05 level. Therefore, Model 1 will be used for the predictions of the unknown species group. 
+
+```{r}
+summary.dat <- data.frame(Models=c('Model 1','Model 2','Model 3'),AIC=c(glm_t.mod$aic,glm_vif.mod$aic,glm3.mod$aic),
+                          MSE = c(mean(glm_t.mod$residuals^2),mean(glm_vif.mod$residuals^2),mean(glm3.mod$residuals^2)),
+                          CV = c(mean(cv_mod.dat[[1]]),mean(cv_mod.dat[[2]]),mean(cv_mod.dat[[3]])))
+
+kable(summary.dat, caption = 'Model Summary Results')
+```
+
+## Predictions
+
+The predictions of the unknown species groups is attached in the *microtus_pred.csv* file. This was done by converting the predictions to a binomial class (0,1). If the prediction was greater than or equal to 0.5, it was assigned to the *subterraneus* class, otherwise it was assigned to the *multiplex* class.
+
+Below is a head of the data export to confirm everything was coded correctly.
+
+```{r}
+pred.dat <- data.frame(Pred=predict(glm_t.mod,test.dat,type='response'))
+pred.dat <- pred.dat %>% mutate(Pred=ifelse(Pred >=0.5,'subterraneus','multiplex'))
+pred.dat <- bind_cols(pred.dat,test.dat)
+
+write.csv(pred.dat,'microtus_pred.csv')
+
+kable(head(pred.dat),caption = 'Head of Teset Prediction Export')
+```
+
+## Conclusion
+
+In conclusion, while the model with the features chosen from the stepwise regression model were used for predictions, a binomial logistic regression may not be the best model for this problem. Based on the fact that the error rates were still fairly, high, improvements to the model were not that significant, and the coefficients were small. Further analysis would be need and different methods, such as K-Nearest Neighbor and decision tree should be teseted to see if results improve.
+ 
+## Bibliography
+
+\footnotesize [microtus: Microtus classification (more vole data)'](https://rdrr.io/cran/Flury/man/microtus.html) 
+
+\footnotesize [How do I generate a histogram for each column of my table?](https://stackoverflow.com/questions/35372365/how-do-i-generate-a-histogram-for-each-column-of-my-table/35373419)
+
+\footnotesize [R: plot histogram of all columns in a data.frame](https://stackoverflow.com/questions/36971873/r-plot-histogram-of-all-columns-in-a-data-frame) 
+
+\footnotesize [Scatterplot matrices (pair plots) with cdata and ggplot2](https://win-vector.com/2018/10/27/scatterplot-matrices-pair-plots-with-cdata-and-ggplot2/)
+
+\footnotesize [How to change correlation text size in ggpairs()](https://stackoverflow.com/questions/8599685/how-to-change-correlation-text-size-in-ggpairs)
+
+\footnotesize [Change Font Size of ggplot2 Plot in R (5 Examples) | Axis Text, Main Title & Legend](https://statisticsglobe.com/change-font-size-of-ggplot2-plot-in-r-axis-text-main-title-legend)
+
+\footnotesize [Stepwise Regression Essentials in R](http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/154-stepwise-regression-essentials-in-r/)
+
+\footnotesize [Binary classifier evaluation metrics: error rate, KS statistic, AUROC, lift, gains table](https://rpubs.com/riazakhan94/ksroclift)
+
+\footnotesize [An introduction to the Akaike information criterion](https://www.scribbr.com/statistics/akaike-information-criterion/#:~:text=In%20statistics%2C%20AIC%20is%20used,the%20model%20reproduces%20the%20data)
+
+\footnotesize [Model Selection Approaches](http://r-statistics.co/Model-Selection-in-R.html)
+
+\footnotesize [Generalized Linear Models in R, Part 1: Calculating Predicted Probability in Binary Logistic Regression](https://www.theanalysisfactor.com/r-tutorial-glm1/)
+
+\footnotesize [Logistic regression](http://www.cookbook-r.com/Statistical_analysis/Logistic_regression/)
